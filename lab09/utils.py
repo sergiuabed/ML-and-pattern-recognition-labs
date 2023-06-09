@@ -22,18 +22,91 @@ def split_db_2to1(D, L, seed=0):
     LTE = L[idxTest]
     return (DTR, LTR), (DTE, LTE)
 
-def svm_dual_obj_wrap(DTR, LTR, K):
+#def svm_dual_obj_wrap(DTR, LTR, K):
+#    '''
+#    this is actually the negative of the svm dual objective. It's done this way because
+#    we need to look for the maximum and scipy.optimize.fmin_l_bfgs_b is a minimizer
+#    '''
+#
+#    embedding = K*np.ones((1, DTR.shape[1]), dtype=float)
+#    D = np.vstack((DTR, embedding))
+#    zh = np.array(LTR).reshape(1,D.shape[1])
+#    zv = np.array(LTR).reshape(D.shape[1],1)
+#
+#    G = np.dot(D.T, D)
+#
+#    H = G*zh
+#    H = H*zv
+#
+#    def svm_dual_obj(_alphas):
+#        L = 0.5*_alphas.T.dot(H).dot(_alphas) - _alphas.T.dot(np.ones((_alphas.shape)))
+#        grad_l = H.dot(_alphas) - 1
+#        grad_l = grad_l.reshape((grad_l.size,))
+#
+#        return (L.item(), grad_l)
+#    
+#    return svm_dual_obj
+
+#def kernel_polynomial_wrap(c, degree):
+#    '''
+#    returns a ready-to-use kernel function
+#    '''
+#
+#    def kernel(X1, X2):
+#        res = (np.dot(X1.T, X2) + c) ** degree
+#        return res
+#
+#    return kernel
+
+def kernel_polynomial_wrap(c, degree, k):
+    '''
+    returns a ready-to-use polynomial kernel function
+    '''
+
+    def kernel(X1, X2):
+        res = (np.dot(X1.T, X2) + c) ** degree + k**2
+        return res
+
+    return kernel
+
+def kernel_rbf_wrap(gamma, k):
+    '''
+    returns a ready-to-use Radial Basis Function kernel
+    '''
+
+    def kernel(X1, X2):
+        res = np.zeros((X1.shape[1], X2.shape[1]))
+
+        for i in range(X1.shape[1]):
+            for j in range(X2.shape[1]):
+                elem = X1[:,i:i+1] - X2[:, j:j+1]
+                elem = elem ** 2
+                elem = -gamma * np.sum(elem, axis=0)
+
+                res[i, j] = np.exp(elem) + k**2
+
+        return res
+    
+    return kernel
+
+def svm_dual_obj_wrap(DTR, LTR, K, kernel=None):
     '''
     this is actually the negative of the svm dual objective. It's done this way because
     we need to look for the maximum and scipy.optimize.fmin_l_bfgs_b is a minimizer
     '''
-
-    embedding = K*np.ones((1, DTR.shape[1]), dtype=float)
-    D = np.vstack((DTR, embedding))
+    if kernel is None:
+        embedding = K*np.ones((1, DTR.shape[1]), dtype=float)
+        D = np.vstack((DTR, embedding))
+    else:
+        D = DTR
+    
     zh = np.array(LTR).reshape(1,D.shape[1])
     zv = np.array(LTR).reshape(D.shape[1],1)
 
-    G = np.dot(D.T, D)
+    if kernel is None:
+        G = np.dot(D.T, D)
+    else:
+        G = kernel(D, D)
 
     H = G*zh
     H = H*zv
@@ -63,27 +136,47 @@ def svm_primal_obj_wrap(DTR, LTR, K, C):
     
     return svm_primal_obj
 
-def svm_dual_classifier_wrap(_alphas, DTR, LTR, K):
-    embedding = K*np.ones((1, DTR.shape[1]), dtype=float)
-    D = np.vstack((DTR, embedding))
+def svm_dual_classifier_wrap(_alphas, DTR, LTR, K, kernel=None):
+    if kernel is None:
+        embedding = K*np.ones((1, DTR.shape[1]), dtype=float)
+        D = np.vstack((DTR, embedding))
+    else:
+        D = DTR
     
     z = np.array(LTR).reshape(D.shape[1],1)
 
-    w_b = D.dot(z*_alphas)
+    if kernel is None:
+        w_b = D.dot(z*_alphas)
 
-    def svm_classifier(x):
-        w = w_b[0:-1]
-        b = w_b[-1]*K
+        def svm_linear_classifier(x):
+            w = w_b[0:-1]
+            b = w_b[-1]*K
 
-        s = w.T.dot(x) + b
+            s = w.T.dot(x) + b
+
+            preds = np.zeros(s.shape)
+            preds[s > 0] = 1
+            preds[s <= 0] = -1
+
+            return preds.reshape(preds.size,)
+        
+        return svm_linear_classifier, w_b
+    
+    def svm_nonlinear_classifier(x):
+        #D_filtered = D[_alphas.reshape((_alphas.size,)) != 0]
+
+        #s = kernel(D.dot(z*_alphas), x)
+        s = kernel(D, x)
+        mul = z*_alphas
+        s = mul.T.dot(s)
 
         preds = np.zeros(s.shape)
         preds[s > 0] = 1
         preds[s <= 0] = -1
 
         return preds.reshape(preds.size,)
-    
-    return svm_classifier, w_b
+
+    return svm_nonlinear_classifier, None
 
 def svm_primal_classifier_wrap(w_b, K):
     def svm_classifier(x):
